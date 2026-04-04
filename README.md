@@ -1,7 +1,3 @@
-# Recon_Bug_Bounty
-# Recon_Bug_Bounty
-# Recon_Bug_Bounty
-# Recon_Bug_Bounty
-# Recon_Bug_Bounty
-# Recon_Bug_Bounty
-# Recon_Bug_Bounty
+A modular bash recon pipeline for bug bounty hunters. Point it at a domain or scope file and it runs the full chain automatically — subdomain enumeration, alive host detection, URL and parameter harvesting, tech fingerprinting, directory fuzzing, screenshots, and vulnerability scanning — then writes everything into a structured markdown report.
+
+Built around ProjectDiscovery's toolchain (subfinder, httpx, nuclei, katana) plus dalfox, sqlmap, gowitness, and ffuf. Supports three modes (lite / standard / full) to balance speed vs coverage, and automatically tags all requests with your HackerOne research header.
