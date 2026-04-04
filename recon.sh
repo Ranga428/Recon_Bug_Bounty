@@ -283,6 +283,13 @@ phase_subdomains() {
 
   # merge & deduplicate
   cat "$OUT/subdomains/"*.txt 2>/dev/null | sort -u > "$OUT/subdomains/all_subs.txt"
+
+  # fallback — always include the root domain so httpx has at least one target
+  if ! grep -qF "$domain" "$OUT/subdomains/all_subs.txt" 2>/dev/null; then
+    warn "No subdomains found — seeding with root domain: $domain"
+    echo "$domain" >> "$OUT/subdomains/all_subs.txt"
+  fi
+
   success "Total unique subdomains: $(wc -l < "$OUT/subdomains/all_subs.txt")"
 
   # alive check — FIX: use -list instead of -l
@@ -616,7 +623,7 @@ fi
 
 check_tools
 
-mkdir -p recon
+mkdir -p recon scope
 
 # ============================================================
 # MAIN LOOP
