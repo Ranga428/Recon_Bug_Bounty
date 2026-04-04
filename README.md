@@ -84,6 +84,22 @@ source ~/.zshrc
 
 > **Note:** Use `~/.bashrc` instead if you're on bash.
 
+### 4. Project structure
+
+When you first run any scan, the script automatically creates two directories:
+
+```
+recon/    ← all scan output lands here, one timestamped folder per target
+scope/    ← store your scope files here to keep things organised
+```
+
+Put your scope files in the `scope/` folder and reference them with `-s`:
+
+```bash
+./recon.sh -s scope/getyourguide.txt
+./recon.sh -s scope/hackerone_program.txt
+```
+
 ---
 
 ## Configuration
@@ -132,11 +148,22 @@ This gets injected as `X-HackerOne-Research: YourH1Username` on all direct HTTP 
 
 ### Scope file format
 
+Scope files live in the `scope/` folder. One bare domain per line — no protocols, no paths, no trailing slashes. Comments and blank lines are ignored.
+
 ```
+# scope/getyourguide.txt
 # Comments and blank lines are ignored
+
 target.com
 api.target.com
 staging.target.com
+```
+
+> **Important:** Use bare domains only. `partner.getyourguide.com` is correct. `https://partner.getyourguide.com/` will break the scan.
+
+Run it with:
+```bash
+./recon.sh -s scope/getyourguide.txt
 ```
 
 ---
