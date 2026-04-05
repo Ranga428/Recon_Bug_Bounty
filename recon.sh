@@ -23,18 +23,9 @@ RST='\033[0m'
 MODE="standard"
 THREADS=50
 DOMAINS=()
+SCOPE_FILE=""
+SINGLE_DOMAIN=""
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
-VERBOSE=false
-
-# ---------- HackerOne research header ----------
-H1_USER="RangaPT"
-H1_HEADER="X-HackerOne-Research: ${H1_USER}"
-
-# ---------- force Go bin path so PD tools take priority over system tools ----------
-export PATH="$(go env GOPATH)/bin:$PATH"
-
-# ---------- nuclei templates ----------
-NUCLEI_TEMPLATES="/home/kali/nuclei-templates"
 
 # ---------- high-value param patterns for sqlmap ----------
 HV_PARAMS="id=|user=|uid=|file=|url=|redirect=|token=|debug=|admin=|ref=|page=|path=|dir=|item=|order="
@@ -70,7 +61,6 @@ usage() {
   echo "  -s  Scope file"
   echo "  -m  Mode: lite | standard | full  (default: standard)"
   echo "  -t  Threads (default: 50)"
-  echo "  -v  Verbose — print each command before it runs"
   echo "  -h  Help"
   echo ""
   echo -e "${BOLD}Modes:${RST}"
@@ -88,14 +78,6 @@ success() { echo -e "${GRN}[+]${RST} $1"; }
 warn()    { echo -e "${YLW}[!]${RST} $1"; }
 error()   { echo -e "${RED}[-]${RST} $1"; }
 section() { echo -e "\n${MAG}${BOLD}━━━ $1 ━━━${RST}"; }
-
-# print command if -v is set, then execute it
-run_cmd() {
-  if [[ "$VERBOSE" == true ]]; then
-    echo -e "${CYN}[CMD]${RST} $*"
-  fi
-  "$@"
-}
 
 # ============================================================
 # INSTALL DEPENDENCIES
@@ -169,9 +151,17 @@ install_deps() {
     success "Templates updated"
   fi
 
+  # ── create folder structure ───────────────────────────────
+  section "Folder Structure"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  mkdir -p "$SCRIPT_DIR/scope"
+  mkdir -p "$SCRIPT_DIR/recon"
+  success "scope/ folder ready → $SCRIPT_DIR/scope"
+  success "recon/ folder ready → $SCRIPT_DIR/recon"
+
   # ── PATH reminder ─────────────────────────────────────────
   echo ""
-  warn "If go tools are not found in future sessions, add this to your ~/.zshrc:"
+  warn "If go tools are not found in future sessions, add this to your ~/.bashrc or ~/.zshrc:"
   echo '  export PATH="$PATH:$(go env GOPATH)/bin"'
   echo ""
   success "All done. Run: ./recon.sh -h"
@@ -272,35 +262,27 @@ phase_subdomains() {
   section "Phase 1 — Subdomain Enumeration"
 
   info "Running subfinder..."
-  run_cmd subfinder -d "$domain" -all -silent 2>>"$LOG" > "$OUT/subdomains/subfinder.txt"
+  subfinder -d "$domain" -all -silent 2>>"$LOG" > "$OUT/subdomains/subfinder.txt"
   success "subfinder: $(wc -l < "$OUT/subdomains/subfinder.txt") results"
 
   if [[ "$MODE" == "full" ]]; then
     info "Running amass (passive)..."
-    run_cmd amass enum -passive -d "$domain" -o "$OUT/subdomains/amass.txt" 2>>"$LOG" || true
+    amass enum -passive -d "$domain" -o "$OUT/subdomains/amass.txt" 2>>"$LOG" || true
     success "amass: $(wc -l < "$OUT/subdomains/amass.txt" 2>/dev/null || echo 0) results"
   fi
 
   # merge & deduplicate
   cat "$OUT/subdomains/"*.txt 2>/dev/null | sort -u > "$OUT/subdomains/all_subs.txt"
-
-  # fallback — always include the root domain so httpx has at least one target
-  if ! grep -qF "$domain" "$OUT/subdomains/all_subs.txt" 2>/dev/null; then
-    warn "No subdomains found — seeding with root domain: $domain"
-    echo "$domain" >> "$OUT/subdomains/all_subs.txt"
-  fi
-
   success "Total unique subdomains: $(wc -l < "$OUT/subdomains/all_subs.txt")"
 
-  # alive check — FIX: use -list instead of -l
+  # alive check
   info "Checking alive hosts (httpx, threads: ${THREADS})..."
-  run_cmd httpx -list "$OUT/subdomains/all_subs.txt" \
+  httpx -l "$OUT/subdomains/all_subs.txt" \
         -threads "$THREADS" \
         -silent \
         -status-code \
         -title \
         -tech-detect \
-        -H "${H1_HEADER}" \
         -o "$OUT/subdomains/alive.txt" 2>>"$LOG"
   success "Alive hosts: $(wc -l < "$OUT/subdomains/alive.txt")"
 
@@ -320,18 +302,16 @@ phase_urls() {
   local domain=$1
   section "Phase 2 — URL & Parameter Harvesting"
 
-  # gau does not support custom headers — passive/archive tool, no direct requests
   info "Running gau..."
-  run_cmd gau "$domain" --threads "$THREADS" --o "$OUT/urls/gau.txt" 2>>"$LOG" || true
+  gau "$domain" --threads "$THREADS" --o "$OUT/urls/gau.txt" 2>>"$LOG" || true
   success "gau: $(wc -l < "$OUT/urls/gau.txt" 2>/dev/null || echo 0) URLs"
 
   if [[ "$MODE" == "standard" || "$MODE" == "full" ]]; then
     info "Running katana..."
-    run_cmd katana -list "$OUT/subdomains/alive_urls.txt" \
+    katana -list "$OUT/subdomains/alive_urls.txt" \
            -d 5 \
            -c "$THREADS" \
            -silent \
-           -H "${H1_HEADER}" \
            -o "$OUT/urls/katana.txt" 2>>"$LOG" || true
     success "katana: $(wc -l < "$OUT/urls/katana.txt" 2>/dev/null || echo 0) URLs"
   fi
@@ -368,30 +348,26 @@ phase_tech_and_fuzz() {
   local domain=$1
   section "Phase 3 — Tech Fingerprinting & Content Discovery"
 
-  # FIX: whatweb header syntax — use -add-header with colon-separated value
   info "Running whatweb..."
-  run_cmd whatweb --input-file="$OUT/subdomains/alive_urls.txt" \
-          -H "X-HackerOne-Research: ${H1_USER}" \
+  whatweb --input-file="$OUT/subdomains/alive_urls.txt" \
           --log-brief="$OUT/tech/whatweb.txt" 2>>"$LOG" || true
   success "whatweb done"
 
-  # FIX: nuclei — point to actual templates directory
   info "Running nuclei (exposures)..."
-  run_cmd nuclei -list "$OUT/subdomains/alive_urls.txt" \
-         -t "${NUCLEI_TEMPLATES}/http/exposures/" \
+  nuclei -l "$OUT/subdomains/alive_urls.txt" \
+         -t exposures/ \
          -c "$THREADS" \
          -silent \
-         -H "${H1_HEADER}" \
          -o "$OUT/vulns/nuclei_exposures.txt" 2>>"$LOG" || true
   success "nuclei exposures: $(wc -l < "$OUT/vulns/nuclei_exposures.txt" 2>/dev/null || echo 0) findings"
 
   if [[ "$MODE" == "standard" || "$MODE" == "full" ]]; then
-    # gowitness does not support custom headers natively — skipped
     info "Running gowitness (screenshots)..."
-    run_cmd gowitness file -f "$OUT/subdomains/alive_urls.txt" \
+    gowitness file -f "$OUT/subdomains/alive_urls.txt" \
               --destination "$OUT/screenshots/" 2>>"$LOG" || true
     success "Screenshots saved to $OUT/screenshots/"
 
+    # ffuf dir fuzz — only on main domain to avoid blasting everything
     if command -v ffuf &>/dev/null; then
       local wordlist
       wordlist=$(find /usr/share/wordlists -name "common.txt" 2>/dev/null | head -1)
@@ -400,11 +376,10 @@ phase_tech_and_fuzz() {
       fi
       if [[ -n "$wordlist" ]]; then
         info "Running ffuf on main domain..."
-        run_cmd ffuf -u "https://${domain}/FUZZ" \
+        ffuf -u "https://${domain}/FUZZ" \
              -w "$wordlist" \
              -t "$THREADS" \
              -mc 200,201,301,302,403 \
-             -H "${H1_HEADER}" \
              -o "$OUT/urls/ffuf.json" \
              -of json \
              -s 2>>"$LOG" || true
@@ -429,9 +404,8 @@ phase_ports() {
   local domain=$1
   section "Phase 4 — Port Scanning (nmap)"
 
-  # nmap operates at TCP/IP level — HTTP headers do not apply
   info "Scanning top 1000 ports on main domain..."
-  run_cmd nmap -sV -T4 --open \
+  nmap -sV -T4 --open \
        -oN "$OUT/ports/nmap.txt" \
        "$domain" 2>>"$LOG" || true
   success "nmap done → $OUT/ports/nmap.txt"
@@ -446,39 +420,37 @@ phase_ports() {
 phase_vulns() {
   section "Phase 5 — Vulnerability Scanning"
 
-  # FIX: nuclei — point to actual templates directory
+  # nuclei full severity
   info "Running nuclei (medium/high/critical)..."
-  run_cmd nuclei -list "$OUT/subdomains/alive_urls.txt" \
-         -t "${NUCLEI_TEMPLATES}/" \
+  nuclei -l "$OUT/subdomains/alive_urls.txt" \
          -severity medium,high,critical \
          -c "$THREADS" \
          -silent \
-         -H "${H1_HEADER}" \
          -o "$OUT/vulns/nuclei_full.txt" 2>>"$LOG" || true
   success "nuclei full: $(wc -l < "$OUT/vulns/nuclei_full.txt" 2>/dev/null || echo 0) findings"
 
+  # dalfox — all params
   if [[ -s "$OUT/params/all_params.txt" ]]; then
     info "Running dalfox on all param URLs..."
-    run_cmd dalfox file "$OUT/params/all_params.txt" \
+    dalfox file "$OUT/params/all_params.txt" \
            --skip-bav \
-           --header "${H1_HEADER}" \
            --output "$OUT/vulns/dalfox.txt" 2>>"$LOG" || true
     success "dalfox: $(wc -l < "$OUT/vulns/dalfox.txt" 2>/dev/null || echo 0) findings"
   else
     warn "No param URLs found — skipping dalfox"
   fi
 
+  # sqlmap — high-value params only
   if [[ -s "$OUT/params/hv_params.txt" ]]; then
     info "Running sqlmap on high-value param URLs..."
     local sqli_out="$OUT/vulns/sqlmap/"
     mkdir -p "$sqli_out"
     while IFS= read -r url; do
-      run_cmd sqlmap -u "$url" \
+      sqlmap -u "$url" \
              --batch \
              --level=2 \
              --risk=2 \
              --threads="$THREADS" \
-             --headers="${H1_HEADER}" \
              --output-dir="$sqli_out" \
              --quiet 2>>"$LOG" || true
     done < "$OUT/params/hv_params.txt"
@@ -548,11 +520,10 @@ run_domain() {
   else
     # lite still gets nuclei exposures
     section "Phase 3 — Nuclei Exposures (lite)"
-    run_cmd nuclei -list "$OUT/subdomains/alive_urls.txt" \
-           -t "${NUCLEI_TEMPLATES}/http/exposures/" \
+    nuclei -l "$OUT/subdomains/alive_urls.txt" \
+           -t exposures/ \
            -c "$THREADS" \
            -silent \
-           -H "${H1_HEADER}" \
            -o "$OUT/vulns/nuclei_exposures.txt" 2>>"$LOG" || true
     success "nuclei exposures: $(wc -l < "$OUT/vulns/nuclei_exposures.txt" 2>/dev/null || echo 0) findings"
     report_section "Nuclei Exposures"
@@ -575,22 +546,19 @@ banner
 
 if [[ $# -eq 0 ]]; then usage; fi
 
-# handle long flags before getopts
+# handle --install-deps (long flag, processed before getopts)
 if [[ "$1" == "--install-deps" ]]; then
   install_deps
 fi
 
-if [[ "$1" == "--help" ]]; then
-  usage
-fi
-
-while getopts ":d:s:m:t:vh" opt; do
+while getopts ":d:s:m:t:h" opt; do
   case $opt in
-    d) DOMAINS+=("$OPTARG") ;;
+    d) DOMAINS+=("$OPTARG"); SINGLE_DOMAIN="$OPTARG" ;;
     s)
       if [[ ! -f "$OPTARG" ]]; then
         error "Scope file not found: $OPTARG"; exit 1
       fi
+      SCOPE_FILE="$OPTARG"
       while IFS= read -r line; do
         # strip whitespace, skip comments and blanks
         line=$(echo "$line" | tr -d '[:space:]')
@@ -610,7 +578,6 @@ while getopts ":d:s:m:t:vh" opt; do
       fi
       THREADS="$OPTARG"
       ;;
-    v) VERBOSE=true ;;
     h) usage ;;
     :) error "Option -$OPTARG requires an argument"; exit 1 ;;
     \?) error "Unknown option: -$OPTARG"; exit 1 ;;
@@ -623,7 +590,7 @@ fi
 
 check_tools
 
-mkdir -p recon scope
+mkdir -p recon
 
 # ============================================================
 # MAIN LOOP
@@ -632,4 +599,24 @@ for domain in "${DOMAINS[@]}"; do
   run_domain "$domain"
 done
 
-echo -e "\n${GRN}${BOLD}All done.${RST} Results in: ${BOLD}recon/${RST}\n"
+# ============================================================
+# FINAL SCOPE SUMMARY
+# ============================================================
+echo -e "\n${CYN}${BOLD}══════════════════════════════════════${RST}"
+echo -e "${BOLD}  SCAN COMPLETE${RST}"
+echo -e "${CYN}${BOLD}══════════════════════════════════════${RST}"
+
+if [[ -n "$SCOPE_FILE" ]]; then
+  echo -e "\n${BOLD}Scope file:${RST} ${YLW}${SCOPE_FILE}${RST}"
+  echo -e "${BOLD}Domains scanned:${RST}"
+  for domain in "${DOMAINS[@]}"; do
+    echo -e "  ${GRN}✔${RST}  $domain"
+  done
+else
+  echo -e "\n${BOLD}Target:${RST} ${YLW}${SINGLE_DOMAIN}${RST}"
+fi
+
+echo -e "\n${BOLD}Mode:${RST}    ${YLW}${MODE}${RST}"
+echo -e "${BOLD}Threads:${RST} ${YLW}${THREADS}${RST}"
+echo -e "${BOLD}Results:${RST} ${YLW}recon/${RST}"
+echo -e ""
